@@ -1,0 +1,18 @@
+# Variables de entorno (contienen contraseñas)
+.env
+# Variantes como .env.txt (Windows) o .env.local
+.env.*
+
+# Archivos compilados de Python
+__pycache__/
+
+# Entorno virtual
+venv/
+.venv/
+
+# Configuración personal de Claude Code (los comandos y skills sí se suben)
+.claude/settings.local.json
+
+# Archivos del sistema (Windows y OneDrive)
+desktop.ini
+Thumbs.db

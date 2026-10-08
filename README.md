@@ -128,6 +128,7 @@ La API queda disponible en http://127.0.0.1:8000. Con `--reload`, el servidor se
 | POST   | `/categories`  | Crea una categoría nueva. |
 | GET    | `/products`    | Lista todos los productos, ordenados por `id`. |
 | GET    | `/products/{product_id}` | Devuelve un producto por su `id`. |
+| POST   | `/products`    | Crea un producto nuevo en una categoría existente. |
 
 ### `GET /hello-world`
 
@@ -207,6 +208,38 @@ Cuerpo de la petición (`description` es opcional):
 
 - Si `product_id` no es un número entero → **422**.
 
+### `POST /products`
+
+Cuerpo de la petición (`description` es opcional):
+
+```json
+{"name": "Teclado", "description": "Teclado mecánico", "price": 49.9, "stock": 0, "category_id": 1}
+```
+
+| Campo | Reglas |
+|-------|--------|
+| `name` | Obligatorio. Se quitan los espacios en blanco de los extremos (también tabuladores y saltos de línea) y se respetan las mayúsculas. Entre 1 y 150 caracteres. |
+| `description` | Opcional. Se recortan los extremos igual que el nombre; si queda vacía se guarda como `null`. Máximo 255 caracteres. |
+| `price` | Obligatorio. Número (no texto), mayor que 0 y menor que 100 000 000, con 2 decimales como máximo. |
+| `stock` | Obligatorio. Número entero (no texto ni `5.0`), de 0 a 2 147 483 647. |
+| `category_id` | Obligatorio. Número entero con el `id` de una categoría existente. |
+
+- Los campos que no aparecen en la tabla (por ejemplo `id` o `created_at`) se ignoran. Se pueden repetir nombres de producto.
+- Creado → **201 Created** con el producto completo, con la misma forma que `GET /products/{product_id}`:
+
+```json
+{"id": 24, "name": "Teclado", "description": "Teclado mecánico", "price": "49.90", "stock": 0, "category_id": 1, "category": {"id": 1, "name": "electronics"}, "created_at": "2026-10-07T18:00:00.000000"}
+```
+
+- Algún campo falta o no cumple las reglas, o el cuerpo está mal formado → **422** con la lista de errores de validación de FastAPI (los mensajes automáticos van en inglés; el de un precio que no es un número es `"El precio debe ser un número"`).
+- La categoría no existe → **422**:
+
+```json
+{"detail": "No existe ninguna categoría con el id 999"}
+```
+
+- Limitación conocida: si un número del cuerpo llega como `NaN` o `Infinity` (no es JSON estándar), la validación lo rechaza, pero FastAPI no puede escribir ese valor en la respuesta de error y devuelve **500**. Pasa en todos los endpoints con cuerpo, también en `POST /categories`.
+
 ### Probar desde la terminal
 
 ```bash
@@ -216,6 +249,12 @@ curl http://127.0.0.1:8000/categories
 curl http://127.0.0.1:8000/categories/1
 curl http://127.0.0.1:8000/products
 curl http://127.0.0.1:8000/products/1
+```
+
+Crear un producto (ojo: lo guarda de verdad en la base de datos) desde PowerShell:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/products -ContentType "application/json" -Body '{"name": "Teclado", "price": 49.9, "stock": 0, "category_id": 1}'
 ```
 
 ## Documentación interactiva

@@ -2,6 +2,8 @@
 
 API REST en fase inicial construida con FastAPI, SQLAlchemy 2.0 y PostgreSQL. La mantiene una persona que está aprendiendo FastAPI, así que el objetivo es una base simple, limpia y fácil de leer, que crecerá poco a poco con productos y categorías.
 
+Los principios del proyecto están en `docs/constitution.md`. Este archivo recoge las reglas operativas; si chocan, manda la constitución.
+
 ## Stack y estructura
 
 - Python 3.12 o superior (la instalación local es 3.14, pero el código debe funcionar en 3.12).
@@ -18,9 +20,11 @@ Arquitectura por capas dentro de `app/`:
 - `database/database.py`: crea `engine` (`create_async_engine`) y `SessionLocal` (`async_sessionmaker` con `expire_on_commit=False`) al importarse.
 - `database/dependencies.py`: `get_db()`, la `AsyncSession` por petición que se inyecta con `Depends(get_db)`.
 - `models/models.py`: clase `Base` (`DeclarativeBase`) y los modelos. Contiene `Category` y `Product`, que reflejan las tablas `categories` y `products` existentes. `Product.category_id` es `ForeignKey` y `Product.category` es una `relationship` de un solo sentido con `lazy="raise"`.
-- `schemas/`: modelos Pydantic de entrada y salida, un archivo por recurso. `category.py` tiene `CategoryCreate` (normaliza el nombre), `CategoryRead` y `CategorySummary` (`id` y `name`, para anidar); `product.py` tiene `ProductRead` (`price` es `Decimal` y sale en el JSON como texto; incluye `category`).
-- `routers/`: un `APIRouter` por recurso. `health.py` tiene `/hello-world` y `/healthz`. `categories.py` tiene `GET /categories`, `GET /categories/{category_id}` y `POST /categories`. `products.py` tiene `GET /products` y `GET /products/{product_id}`.
+- `schemas/`: modelos Pydantic de entrada y salida, un archivo por recurso. `category.py` tiene `CategoryCreate` (normaliza el nombre), `CategoryRead` y `CategorySummary` (`id` y `name`, para anidar); `product.py` tiene `ProductCreate` (números estrictos, nombre y descripción recortados, `MAX_INTEGER`) y `ProductRead` (`price` es `Decimal` y sale en el JSON como texto; incluye `category`).
+- `routers/`: un `APIRouter` por recurso. `health.py` tiene `/hello-world` y `/healthz`. `categories.py` tiene `GET /categories`, `GET /categories/{category_id}` y `POST /categories`. `products.py` tiene `GET /products`, `GET /products/{product_id}` y `POST /products`.
 - `main.py`: crea la app y registra los routers. Nada más.
+
+Fuera de `app/`: `docs/constitution.md` (principios del proyecto) y `specs/NNN-*/` (diseño de cada funcionalidad: `spec.md`, `plan.md` y `tasks.md`). La sección de cada endpoint en el `README.md` es el contrato público y se escribe antes del código (principio 2).
 
 ## Comandos
 
@@ -61,7 +65,9 @@ Todavía no hay tests, linter ni herramienta de migraciones configurados.
 - No hay migraciones: crear o modificar tablas es una decisión que hay que consultar antes.
 - Las tablas `categories` y `products` se crearon a mano con SQL y ya tienen datos. Los modelos deben reflejar exactamente el esquema real. Nunca uses `Base.metadata.create_all` ni alteres tablas.
 - Los nombres de categoría se guardan sin espacios en los extremos y en minúsculas. La restricción UNIQUE de PostgreSQL distingue mayúsculas, así que la normalización la hace el schema.
-- Códigos de error: un recurso que no existe devuelve 404 y un duplicado (`IntegrityError` por UNIQUE) devuelve 409, ambos con `detail` en español. Busca por clave primaria con `db.get(Modelo, id)`.
+- Códigos de error: un recurso de la ruta que no existe devuelve 404; un id del cuerpo de la petición que no existe (como `category_id` al crear un producto) devuelve 422; un duplicado (`IntegrityError` por UNIQUE) devuelve 409. Siempre con `detail` en español. Busca por clave primaria con `db.get(Modelo, id)`.
+- Para devolver un objeto recién creado con una relación, vuelve a consultarlo con `db.get(..., options=[joinedload(...)], populate_existing=True)`. Sin `populate_existing`, `db.get` devuelve el objeto que ya está en la sesión, ignora el `joinedload` y la respuesta falla por `lazy="raise"`.
+- Un id mayor que 2 147 483 647 (máximo de INTEGER) hace que asyncpg lance `DBAPIError` en `db.get`: compruébalo antes de consultar.
 - No uses sintaxis o librerías de Python posteriores a 3.12, aunque la instalación local sea más nueva.
 
 ## Límites y datos sensibles
@@ -96,12 +102,17 @@ Todavía no hay tests, linter ni herramienta de migraciones configurados.
 - Cambiar el formato de las respuestas de la API, sobre todo de `/healthz`.
 - Crear modelos o tablas, o introducir una herramienta de migraciones.
 - Añadir autenticación, tests, Docker o un linter.
+- Modificar `docs/constitution.md`.
 
 🚫 **Nunca:**
 - Definir endpoints en `main.py`.
 - Añadir un prefijo al router de `health.py`.
 - Tocar `.env` o subir secretos al repositorio.
 - Ejecutar SQL destructivo contra la base de datos.
+- Hacer commit o push sin que el usuario lo pida explícitamente. Aprobar un plan o decir "dale" no cuenta como permiso: los cambios se dejan sin confirmar en el árbol de trabajo.
+
+## Reglas
+- Lee `docs/constitution.md` y la spec activa (`specs/NNN-*/`) antes de tocar código.
 
 ## Verificación
 
@@ -117,4 +128,5 @@ Invoke-RestMethod http://127.0.0.1:8000/healthz
 
 3. Comprueba que `/healthz` devuelve `{"status": "ok", "database": "ok"}` con PostgreSQL encendido.
 4. Abre http://127.0.0.1:8000/docs y confirma que aparecen los endpoints esperados.
-5. Si el cambio afecta a la conexión, comprueba también que `/healthz` devuelve 503 con PostgreSQL detenido.
+5. Si el cambio afecta a la conexión, comprueba también que `/healthz` devuelve 503 con PostgreSQL detenido, o arrancando un servidor de prueba con una variable de entorno solo para ese proceso (por ejemplo `DB_PORT=1`), sin tocar `.env`.
+6. Las escrituras (por ejemplo, el 201 de un `POST`) se prueban dentro de una transacción que se deshace al final: no se dejan datos de prueba.

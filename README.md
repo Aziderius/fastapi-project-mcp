@@ -129,6 +129,7 @@ La API queda disponible en http://127.0.0.1:8000. Con `--reload`, el servidor se
 | GET    | `/products`    | Lista todos los productos, ordenados por `id`. |
 | GET    | `/products/{product_id}` | Devuelve un producto por su `id`. |
 | POST   | `/products`    | Crea un producto nuevo en una categoría existente. |
+| PUT    | `/products/{product_id}` | Modifica un producto existente sustituyendo todos sus datos editables. |
 
 ### `GET /hello-world`
 
@@ -200,12 +201,13 @@ Cuerpo de la petición (`description` es opcional):
 ### `GET /products/{product_id}`
 
 - Si existe → **200 OK** con el producto (misma forma que en el listado).
-- Si no existe → **404 Not Found**:
+- Si no existe → **404 Not Found**, también con 0, negativos e ids enormes que no caben en un entero de PostgreSQL (por ejemplo `99999999999999999999` o `-99999999999999999999`), nunca 500:
 
 ```json
 {"detail": "No existe ningún producto con el id 999"}
 ```
 
+- El `{id}` del mensaje es el número tal como se ha interpretado (`/products/05` → `id 5`).
 - Si `product_id` no es un número entero → **422**.
 
 ### `POST /products`
@@ -240,6 +242,60 @@ Cuerpo de la petición (`description` es opcional):
 
 - Limitación conocida: si un número del cuerpo llega como `NaN` o `Infinity` (no es JSON estándar), la validación lo rechaza, pero FastAPI no puede escribir ese valor en la respuesta de error y devuelve **500**. Pasa en todos los endpoints con cuerpo, también en `POST /categories`.
 
+### `PUT /products/{product_id}`
+
+Modifica un producto existente con **sustitución completa**: todos los datos editables (`name`, `description`, `price`, `stock` y `category_id`) se reemplazan a la vez por los enviados. Lo que no se envía no conserva su valor anterior: si es obligatorio, es un error; si es `description`, queda `null` (aunque antes tuviera descripción).
+
+`product_id` se interpreta igual que en `GET /products/{product_id}`: `05` → 5, `-0` → 0 y, como en la consulta, también `1.0` → 1, `5_0` → 50 y ` 5 ` (con espacios) → 5.
+
+Cuerpo de la petición (mismo formato que en `POST /products`; `description` es opcional):
+
+```json
+{"name": "Smartphone", "price": 649.9, "stock": 10, "category_id": 2}
+```
+
+- Cada campo sigue **exactamente las mismas reglas** que en la tabla de `POST /products` (recortes, longitudes, precio y stock como números de verdad, límites), con los mismos mensajes.
+- `description` ausente, `null`, `""` o solo espacios → se guarda `null`.
+- Los campos que no aparecen en la tabla (`id`, `created_at`, `category`…) se ignoran sea cual sea su valor: el `id` y la fecha de alta del producto nunca cambian.
+- Si un campo aparece repetido en el cuerpo, se usa el último valor.
+
+Modificado → **200 OK** (no 201) con el producto completo, con la misma forma que `GET /products/{product_id}`: la categoría nueva si ha cambiado, y el `id` y el `created_at` originales. El nombre se guarda tal como se envía, una vez recortado:
+
+```json
+{"id": 1, "name": "Smartphone", "description": null, "price": "649.90", "stock": 10, "category_id": 2, "category": {"id": 2, "name": "clothes"}, "created_at": "2026-10-06T13:28:21.054510"}
+```
+
+Si los datos enviados (ya normalizados) son los que tiene guardados el producto, la respuesta es la misma: **200 OK** con el producto sin cambios.
+
+**Errores**, en este orden de prioridad (si se dan varios, solo se informa del primero de la lista; ninguno modifica nada):
+
+| Orden | Código | Cuándo | Cuerpo de la respuesta |
+|-------|--------|--------|------------------------|
+| 1 | **422** | El cuerpo JSON está mal formado (por ejemplo `{"price": 500,00}`). | Solo el error `json_invalid`, aunque `product_id` tampoco sea válido. |
+| 2 | **422** | `product_id` no es un número entero (`abc`, `1.5`) y/o algún campo del cuerpo no cumple las reglas, o el cuerpo falta o no es un objeto (una lista, un texto). | La lista de errores de validación de FastAPI con **todos** los errores de la ruta y del cuerpo juntos (mensajes automáticos en inglés; el de un precio que no es un número es `"El precio debe ser un número"`). |
+| 3 | **404** | El producto no existe (incluidos 0, negativos e ids enormes como `99999999999999999999`). | `{"detail": "No existe ningún producto con el id 999"}` |
+| 4 | **422** | La categoría no existe (incluidos 0, negativos e ids enormes). | `{"detail": "No existe ninguna categoría con el id 999"}` |
+| 5 | **409** | El nombre cambia y es equivalente al de **otro** producto (de cualquier categoría). | `{"detail": "Ya existe otro producto con el nombre TECLADO"}` (el nombre enviado, ya recortado) |
+| — | **500** | La base de datos no está disponible o hay un error inesperado. | Respuesta genérica del servidor. |
+
+Por ejemplo: un producto inexistente con un precio negativo da el 422 del precio (no el 404); un producto inexistente con una categoría inexistente da el 404; una categoría inexistente con un nombre repetido da el 422 de la categoría. El `{id}` de los mensajes es el número interpretado (`/products/05` → `id 5`).
+
+**Nombres repetidos.** Al modificar, el nombre nuevo no puede ser equivalente al de otro producto. Dos nombres son equivalentes si coinciden tras quitar los espacios de los extremos y comparando así, letra a letra:
+
+- No se distinguen mayúsculas de minúsculas en las letras del alfabeto español (A–Z, Ñ, á, é, í, ó, ú y ü), ni las vocales con tilde o diéresis de la vocal sin marca: `Camión` y `CAMION` son equivalentes, igual que `pingüino` y `PINGUINO`.
+- Una misma letra escrita de dos formas internas (la `ó` como un solo carácter o como `o` + tilde) cuenta como la misma letra. También los signos que Unicode declara equivalentes a una letra: `Kelvin` escrito con el signo kelvin (U+212A) en lugar de la `K` es equivalente a `Kelvin` con la letra `K` (igual el signo ohmio, U+2126, con la letra griega `Ω` y el signo ångström, U+212B, con `Å`).
+- Todo lo demás se compara tal cual: `Año` y `Ano` **no** son equivalentes (la ñ es otra letra); `Straße` y `STRASSE` tampoco (`ß` no equivale a `SS`); `À` y `à` tampoco (otras letras con marca, como `à`, `ç` u `ö`, no se igualan ni entre mayúscula y minúscula ni a la letra sin marca); los espacios internos cuentan (`Teclado  mecánico` ≠ `Teclado mecánico`).
+
+Cambiar solo las mayúsculas, las tildes o los espacios de los extremos del **propio** nombre (`teclado` → `Teclado`, `Camion` → `Camión`) no es un cambio de nombre: se acepta sin comprobar repetidos (aunque otros productos se llamen igual) y se guarda el nombre enviado. Crear productos (`POST /products`) sigue permitiendo nombres repetidos.
+
+**Limitaciones y desviaciones conocidas:**
+
+- Un campo obligatorio enviado como `null` se rechaza con **422**, pero el error lo señala como tipo incorrecto, no como ausente.
+- `NaN`, `Infinity`, `-Infinity` o `1e400` en un campo de la tabla (`name`, `description`, `price`, `stock` o `category_id`) dan **500** en lugar de 422 (como en `POST /products`), y el producto no se modifica. En un dato que no está en la tabla, el valor se ignora como cualquier otro dato no previsto y la respuesta puede ser **200** (o **500**); en ningún caso se guarda un valor no finito.
+- Los ids enormes se garantizan hasta 4 000 cifras. A partir de unas 4 300 cifras, un número en el cuerpo hace que no se pueda leer y la respuesta es **400** `{"detail": "There was an error parsing the body"}`; en `product_id`, la respuesta es un **422** de formato en lugar del 404. El producto no cambia.
+- Modificaciones simultáneas (no verificado): si llegan dos a la vez sobre el mismo producto, se aplican una detrás de otra y queda la última completa, nunca una mezcla. Dos productos distintos renombrados a la vez con nombres equivalentes pueden terminar ambos con éxito.
+- Si la categoría nueva se borra justo durante la modificación, se espera el mismo 422 de categoría inexistente (no verificado).
+
 ### Probar desde la terminal
 
 ```bash
@@ -255,6 +311,12 @@ Crear un producto (ojo: lo guarda de verdad en la base de datos) desde PowerShel
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/products -ContentType "application/json" -Body '{"name": "Teclado", "price": 49.9, "stock": 0, "category_id": 1}'
+```
+
+Modificar un producto (ojo: **cambia de verdad** los datos guardados y no se puede deshacer; envía todos los campos, porque los que falten se pierden o dan error) desde PowerShell:
+
+```powershell
+Invoke-RestMethod -Method Put -Uri http://127.0.0.1:8000/products/1 -ContentType "application/json" -Body '{"name": "Smartphone", "price": 649.9, "stock": 10, "category_id": 2}'
 ```
 
 ## Documentación interactiva

@@ -20,8 +20,8 @@ Arquitectura por capas dentro de `app/`:
 - `database/database.py`: crea `engine` (`create_async_engine`) y `SessionLocal` (`async_sessionmaker` con `expire_on_commit=False`) al importarse.
 - `database/dependencies.py`: `get_db()`, la `AsyncSession` por petición que se inyecta con `Depends(get_db)`.
 - `models/models.py`: clase `Base` (`DeclarativeBase`) y los modelos. Contiene `Category` y `Product`, que reflejan las tablas `categories` y `products` existentes. `Product.category_id` es `ForeignKey` y `Product.category` es una `relationship` de un solo sentido con `lazy="raise"`.
-- `schemas/`: modelos Pydantic de entrada y salida, un archivo por recurso. `category.py` tiene `CategoryCreate` (normaliza el nombre), `CategoryRead` y `CategorySummary` (`id` y `name`, para anidar); `product.py` tiene `ProductCreate` (números estrictos, nombre y descripción recortados, `MAX_INTEGER`) y `ProductRead` (`price` es `Decimal` y sale en el JSON como texto; incluye `category`).
-- `routers/`: un `APIRouter` por recurso. `health.py` tiene `/hello-world` y `/healthz`. `categories.py` tiene `GET /categories`, `GET /categories/{category_id}` y `POST /categories`. `products.py` tiene `GET /products`, `GET /products/{product_id}` y `POST /products`.
+- `schemas/`: modelos Pydantic de entrada y salida, un archivo por recurso. `category.py` tiene `CategoryCreate` (normaliza el nombre), `CategoryRead` y `CategorySummary` (`id` y `name`, para anidar); `product.py` tiene `ProductCreate` (números estrictos, nombre y descripción recortados, `MAX_INTEGER` y `MIN_INTEGER`), `ProductUpdate` (subclase vacía de `ProductCreate`: mismas reglas), `product_name_key` (clave para comparar nombres de producto: recorte, NFC y tabla del alfabeto español) y `ProductRead` (`price` es `Decimal` y sale en el JSON como texto; incluye `category`).
+- `routers/`: un `APIRouter` por recurso. `health.py` tiene `/hello-world` y `/healthz`. `categories.py` tiene `GET /categories`, `GET /categories/{category_id}` y `POST /categories`. `products.py` tiene `GET /products`, `GET /products/{product_id}`, `POST /products` y `PUT /products/{product_id}` (sustitución completa).
 - `main.py`: crea la app y registra los routers. Nada más.
 
 Fuera de `app/`: `docs/constitution.md` (principios del proyecto) y `specs/NNN-*/` (diseño de cada funcionalidad: `spec.md`, `plan.md` y `tasks.md`). La sección de cada endpoint en el `README.md` es el contrato público y se escribe antes del código (principio 2).
@@ -65,9 +65,10 @@ Todavía no hay tests, linter ni herramienta de migraciones configurados.
 - No hay migraciones: crear o modificar tablas es una decisión que hay que consultar antes.
 - Las tablas `categories` y `products` se crearon a mano con SQL y ya tienen datos. Los modelos deben reflejar exactamente el esquema real. Nunca uses `Base.metadata.create_all` ni alteres tablas.
 - Los nombres de categoría se guardan sin espacios en los extremos y en minúsculas. La restricción UNIQUE de PostgreSQL distingue mayúsculas, así que la normalización la hace el schema.
-- Códigos de error: un recurso de la ruta que no existe devuelve 404; un id del cuerpo de la petición que no existe (como `category_id` al crear un producto) devuelve 422; un duplicado (`IntegrityError` por UNIQUE) devuelve 409. Siempre con `detail` en español. Busca por clave primaria con `db.get(Modelo, id)`.
+- Códigos de error: un recurso de la ruta que no existe devuelve 404; un id del cuerpo de la petición que no existe (como `category_id` al crear un producto) devuelve 422; un duplicado devuelve 409, tanto si lo detecta PostgreSQL (`IntegrityError` por UNIQUE) como si lo comprueba el endpoint sin UNIQUE detrás (nombre de producto repetido al modificar, comparado con `product_name_key`). Siempre con `detail` en español. Busca por clave primaria con `db.get(Modelo, id)`.
 - Para devolver un objeto recién creado con una relación, vuelve a consultarlo con `db.get(..., options=[joinedload(...)], populate_existing=True)`. Sin `populate_existing`, `db.get` devuelve el objeto que ya está en la sesión, ignora el `joinedload` y la respuesta falla por `lazy="raise"`.
-- Un id mayor que 2 147 483 647 (máximo de INTEGER) hace que asyncpg lance `DBAPIError` en `db.get`: compruébalo antes de consultar.
+- Un id mayor que 2 147 483 647 (máximo de INTEGER) hace que asyncpg lance `DBAPIError` en `db.get`: compruébalo antes de consultar. En `routers/products.py` se hace con `fits_in_integer` (límites `MIN_INTEGER` y `MAX_INTEGER`); `GET /categories/{category_id}` todavía no lo comprueba (pendiente).
+- Para bloquear una fila (`db.get(..., with_for_update=True)`) no añadas `joinedload` en esa misma lectura: PostgreSQL rechaza `FOR UPDATE` en el lado nulable de un outer join. Carga la relación después, en la reconsulta con `populate_existing=True`.
 - No uses sintaxis o librerías de Python posteriores a 3.12, aunque la instalación local sea más nueva.
 
 ## Límites y datos sensibles
@@ -122,7 +123,6 @@ Antes de dar un cambio por terminado:
 2. Prueba los endpoints:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/hello-world
 Invoke-RestMethod http://127.0.0.1:8000/healthz
 ```
 

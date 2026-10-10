@@ -1,5 +1,8 @@
 # Esquemas de Pydantic para los productos.
-# Validan los datos que entran (ProductCreate) y salen (ProductRead) de la API.
+# Validan los datos que entran (ProductCreate al crear, ProductUpdate al
+# modificar) y salen (ProductRead) de la API. También definen cómo se comparan
+# los nombres de producto (product_name_key).
+import unicodedata
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
@@ -11,6 +14,11 @@ from app.schemas.category import CategorySummary
 # Valor máximo de una columna INTEGER de PostgreSQL. Lo usan el stock y la
 # comprobación de que la categoría existe (un id mayor no puede existir).
 MAX_INTEGER = 2_147_483_647
+
+# Valor mínimo de una columna INTEGER de PostgreSQL. Junto con MAX_INTEGER
+# sirve para saber si un id cabe en la columna antes de consultar (un id
+# fuera de ese rango no puede existir).
+MIN_INTEGER = -2_147_483_648
 
 # Nombre del producto: se quitan los espacios en blanco de los extremos
 # (también tabuladores y saltos de línea) y se respetan las mayúsculas.
@@ -56,6 +64,58 @@ class ProductCreate(BaseModel):
         if description == "":
             return None
         return description
+
+
+class ProductUpdate(ProductCreate):
+    """Datos necesarios para modificar un producto (sustitución completa).
+
+    No añade campos ni validadores: hereda todos los de ProductCreate, así que
+    la modificación valida exactamente igual que la creación, con los mismos
+    mensajes. Existe como clase propia para que /docs muestre "ProductUpdate"
+    como cuerpo del PUT.
+    """
+
+
+# Tabla de equivalencias del alfabeto español para comparar nombres de producto.
+# Cada carácter de la primera cadena se sustituye por el que ocupa la misma
+# posición en la segunda (por eso las dos tienen la misma longitud):
+#   - Las mayúsculas A-Z pasan a minúscula.
+#   - Las vocales con tilde o diéresis (Á É Í Ó Ú Ü y á é í ó ú ü) pasan a la
+#     vocal sin marca y en minúscula.
+#   - La Ñ pasa a ñ (pero la ñ NO se iguala a la n: "Año" y "Ano" son distintos).
+# Lo que NO se iguala, a propósito, y se compara tal cual:
+#   - La ß (no equivale a "ss"): "Straße" y "STRASSE" son distintos.
+#   - Otras letras con marca (à, è, ç, ö...) ni se igualan a la letra sin marca
+#     ni entre mayúscula y minúscula: "À" y "à" son distintos.
+#   - Letras de ancho completo (Ｔ) o de otros alfabetos.
+# No se usa lower() ni casefold() porque igualarían también esos casos.
+SPANISH_NAME_TABLE = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "ÁÉÍÓÚÜ" + "áéíóúü" + "Ñ",
+    "abcdefghijklmnopqrstuvwxyz" + "aeiouu" + "aeiouu" + "ñ",
+)
+
+
+def product_name_key(name: str) -> str:
+    """Devuelve la clave con la que se comparan dos nombres de producto.
+
+    Dos nombres son equivalentes si tienen la misma clave. Pasos:
+    1. strip(): quita los espacios en blanco de los extremos (los de dentro
+       cuentan: "Teclado  mecánico" no es "Teclado mecánico").
+    2. Normalización NFC: une las dos formas internas de una misma letra
+       ("o" + tilde suelta se convierte en "ó"). También convierte el signo
+       kelvin en la letra K, el signo de ohmio en Ω y el de ångström en Å.
+    3. translate() con SPANISH_NAME_TABLE: quita mayúsculas, tildes y diéresis
+       del alfabeto español.
+
+    Ejemplos:
+        product_name_key("  Camión ")  -> "camion"   (igual que "CAMION")
+        product_name_key("ÑANDÚ")      -> "ñandu"    (igual que "ñandú")
+        product_name_key("Kelvin") -> "kelvin"  (signo kelvin, igual que "Kelvin")
+        product_name_key("Año")        -> "año"      (distinto de "Ano")
+    """
+    stripped = name.strip()
+    normalized = unicodedata.normalize("NFC", stripped)
+    return normalized.translate(SPANISH_NAME_TABLE)
 
 
 class ProductRead(BaseModel):
